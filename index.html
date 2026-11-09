@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#176b3a">
+  <title>My SMS — Local Test</title>
+  <style>
+    :root { color-scheme: light; --green:#176b3a; --green2:#21864b; --ink:#17231b; --muted:#66736a; --line:#dce5de; --bg:#f3f7f4; }
+    * { box-sizing:border-box }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; display:grid; place-items:center; padding:20px; }
+    main { width:min(100%,460px); background:#fff; border:1px solid var(--line); border-radius:22px; padding:24px; box-shadow:0 12px 36px #163b2412; }
+    header { display:flex; align-items:center; gap:12px; margin-bottom:24px }
+    .logo { width:44px;height:44px;border-radius:14px;background:#e7f4eb;color:var(--green);display:grid;place-items:center;font-size:22px }
+    h1 { font-size:21px; margin:0 } .sub { margin:2px 0 0;color:var(--muted);font-size:13px }
+    label { display:block; font-weight:650; font-size:14px; margin:17px 0 7px }
+    input,textarea { width:100%; border:1px solid var(--line); border-radius:12px; padding:13px 14px; font:inherit; outline:none; background:#fff; color:var(--ink) }
+    input:focus,textarea:focus { border-color:var(--green2); box-shadow:0 0 0 3px #21864b18 }
+    textarea { min-height:130px; resize:vertical }
+    .delays { display:grid; grid-template-columns:repeat(3,1fr); gap:9px }
+    .delay { position:relative }
+    .delay input { position:absolute; opacity:0; inset:0; width:100%; height:100%; cursor:pointer }
+    .delay span { display:block; text-align:center; border:1px solid var(--line); border-radius:11px; padding:11px 6px; font-weight:650; cursor:pointer }
+    .delay input:checked + span { border-color:var(--green); background:#eaf5ed; color:var(--green) }
+    button { width:100%; margin-top:22px; border:0; border-radius:12px; background:var(--green); color:#fff; padding:15px; font:700 16px system-ui; cursor:pointer }
+    button:disabled { opacity:.6;cursor:wait }
+    .hint { color:var(--muted);font-size:12px;margin:12px 1px 0 }
+    #status { display:none; margin-top:16px; padding:12px; border-radius:10px; font-size:14px; white-space:pre-wrap; overflow-wrap:anywhere }
+    #status.show { display:block } #status.info { background:#eef4ff;color:#234a85 } #status.ok { background:#eaf6ed;color:#176b3a } #status.err { background:#fff0ef;color:#a52d25 }
+    details { margin-top:22px; border-top:1px solid var(--line); padding-top:15px }
+    summary { cursor:pointer; font-weight:650; font-size:14px }
+    .small { font-size:12px;color:var(--muted) }
+    code { background:#eef4ee; padding:1px 4px; border-radius:4px; font-size:12px }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo">✉</div>
+    <div><h1>My SMS</h1><p class="sub">Local SMS sending test</p></div>
+  </header>
+
+  <form id="smsForm">
+    <label for="phone">Recipient phone number</label>
+    <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel"
+           placeholder="+2547XXXXXXXX" required>
+
+    <label for="message">Your message</label>
+    <textarea id="message" name="message" placeholder="Type your message here..." required></textarea>
+
+    <label>Delivery delay</label>
+    <div class="delays">
+      <label class="delay"><input type="radio" name="delay" value="1"><span>1 second</span></label>
+      <label class="delay"><input type="radio" name="delay" value="3" checked><span>3 seconds</span></label>
+      <label class="delay"><input type="radio" name="delay" value="5"><span>5 seconds</span></label>
+    </div>
+
+    <button id="sendBtn" type="submit">Send SMS</button>
+    <p class="hint">Your last phone number is saved in this browser and prefilled next time.</p>
+  </form>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <details>
+    <summary>Server settings</summary>
+    <label for="token">Access token (optional)</label>
+    <input id="token" type="password" autocomplete="off"
+           placeholder="Only needed if SMS_API_TOKEN is set on the server">
+    <p class="small">
+      Africa's Talking credentials live in <code>api/send-sms.js</code> on the server
+      and are never sent to this page.
+    </p>
+  </details>
+</main>
+
+<script>
+  const API_ENDPOINT = "/api/send-sms";
+  const form = document.getElementById("smsForm");
+  const phone = document.getElementById("phone");
+  const message = document.getElementById("message");
+  const token = document.getElementById("token");
+  const sendBtn = document.getElementById("sendBtn");
+  const statusBox = document.getElementById("status");
+
+  phone.value = localStorage.getItem("mySmsLastPhone") || "";
+  token.value = localStorage.getItem("mySmsToken") || "";
+
+  function status(text, type) {
+    statusBox.textContent = text;
+    statusBox.className = "show " + type;
+  }
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  function describe(result) {
+    const sms = result && result.data && result.data.SMSMessageData;
+    if (sms && Array.isArray(sms.Recipients) && sms.Recipients.length) {
+      return sms.Recipients
+        .map(r => `${r.number}: ${r.status}` + (r.cost ? ` (${r.cost})` : ""))
+        .join("\n");
+    }
+    if (typeof result?.data === "string") return result.data;
+    try { return JSON.stringify(result?.data, null, 2); } catch { return String(result?.data); }
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    if (location.protocol === "file:") {
+      return status(
+        "This page must be served by the local server.\n" +
+        "Run:  npm install  &&  npm run dev\n" +
+        "Then open http://localhost:3000/",
+        "err"
+      );
+    }
+
+    const to = phone.value.trim();
+    const body = message.value.trim();
+    const delay = Number(new FormData(form).get("delay") || 3);
+
+    if (!to || !body) return status("Enter a phone number and message.", "err");
+
+    localStorage.setItem("mySmsLastPhone", to);
+    localStorage.setItem("mySmsToken", token.value.trim());
+    sendBtn.disabled = true;
+
+    try {
+      for (let remaining = delay; remaining > 0; remaining--) {
+        status(`Sending in ${remaining}… You can switch to another app now.`, "info");
+        await wait(1000);
+      }
+
+      status("Submitting SMS…", "info");
+
+      const headers = { "Content-Type": "application/json" };
+      const t = token.value.trim();
+      if (t) headers["X-Sms-Token"] = t;
+
+      const response = await fetch(API_ENDPOINT, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ to, message: body }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok || !result.ok) {
+        const detail = result.error || describe(result) || `HTTP ${response.status}`;
+        throw new Error(detail);
+      }
+
+      status("Request submitted. Check your SMS inbox.\n" + describe(result), "ok");
+      message.value = "";
+    } catch (error) {
+      status("Could not send.\n" + ((error && error.message) || String(error)), "err");
+    } finally {
+      sendBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
